@@ -1,0 +1,1 @@
+verify if we need to add 0 to the beginning of CGMdata even though the file ends with no 1
