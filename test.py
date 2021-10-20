@@ -6,7 +6,7 @@ import pickle_compat
 pickle_compat.patch()
 
 
-file_path_test_data = "testm.csv"
+file_path_test_data = "test.csv"
 test_data_matrix = pd.read_csv(file_path_test_data)
 test_data_matrix.columns = range(0, 24)
 
@@ -79,8 +79,9 @@ test_feature_matrix.reset_index(inplace=True)
 test_feature_matrix = pd.concat([test_feature_matrix, dff1, dff2, dfm1, dfm2, dfm3, dfd1, dfd2, dfd3], axis=1)
 test_feature_matrix.drop(columns='index', inplace=True)
 
-with open('DMpt1.pkl', 'rb') as handle:
+with open('DMptG.pkl', 'rb') as handle:
     model_from_job = pickle.load(handle)
+
 
 Y_pred = model_from_job.predict(test_feature_matrix)
 
