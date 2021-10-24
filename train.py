@@ -3,14 +3,122 @@ import pandas as pd
 import numpy as np
 import pickle
 import pickle_compat
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.model_selection import KFold
+from scipy.fftpack import fft
 pickle_compat.patch()
 
-def meal_NoMeal_Data_Extract(file_path_insulin, file_path_cgm):
-    df_insulin = pd.read_csv(file_path_insulin, parse_dates=[['Date', 'Time']],
-                             keep_date_col=True)  # read insulin data and copy it to a dataframe
-    df_cgm = pd.read_csv(file_path_cgm, parse_dates=[['Date', 'Time']], keep_date_col=True)
+def pcaAnalysis(mealDataFeatures, noMealDataFeatures):
+    stdScaler = StandardScaler()
+    meal_std = stdScaler.fit_transform(mealDataFeatures)
+    noMeal_std = stdScaler.fit_transform(noMealDataFeatures)
 
-    #df_cgm.dropna(subset=['Sensor Glucose (mg/dL)'], inplace=True)
+    pca = PCA(n_components=5)
+    pca.fit(meal_std)
+
+    meal_pca = pd.DataFrame(pca.fit_transform(meal_std))
+    noMeal_pca = pd.DataFrame(pca.fit_transform(noMeal_std))
+
+    meal_pca['class'] = 1
+    noMeal_pca['class'] = 0
+
+    data = meal_pca.append(noMeal_pca)
+    data.index = [i for i in range(data.shape[0])]
+    return data
+
+def fn_zero_crossings(row, xAxis):
+    slopes = [
+        0]
+    zero_cross = list()
+    zero_crossing_rate = 0
+    X = [i for i in range(xAxis)][::-1]
+    Y = row[::-1]
+    for index in range(0, len(X) - 1):
+        slopes.append((Y[(index + 1)] - Y[index]) / (X[(index + 1)] - X[index]))
+
+    for index in range(0, len(slopes) - 1):
+        if slopes[index] * slopes[(index + 1)] < 0:
+            zero_cross.append([slopes[(index + 1)] - slopes[index], X[(index + 1)]])
+
+    zero_crossing_rate = np.sum(
+        [np.abs(np.sign(slopes[(i + 1)]) - np.sign(slopes[i])) for i in range(0, len(slopes) - 1)]) / (2 * len(slopes))
+    if len(zero_cross) > 0:
+        return [max(zero_cross)[0], zero_crossing_rate]
+    else:
+        return [
+            0, 0]
+
+
+def absoluteValueMean(param):
+    meanValue = 0
+    for p in range(0, len(param) - 1):
+        meanValue = meanValue + np.abs(param[(p + 1)] - param[p])
+    return meanValue / len(param)
+
+
+def glucoseEntropy(param):
+    paramLen = len(param)
+    entropy = 0
+    if paramLen <= 1:
+        return 0
+    else:
+        value, count = np.unique(param, return_counts=True)
+        ratio = count / paramLen
+        nonZero_ratio = np.count_nonzero(ratio)
+        if nonZero_ratio <= 1:
+            return 0
+        for i in ratio:
+            entropy -= i * np.log2(i)
+        return entropy
+
+
+def rootMeanSquare(param):
+    rootMeanSquare = 0
+    for p in range(0, len(param) - 1):
+        rootMeanSquare = rootMeanSquare + np.square(param[p])
+    return np.sqrt(rootMeanSquare / len(param))
+
+
+def fastFourier(param):
+    fastFourier = fft(param)
+    paramLen = len(param)
+    t = 2 / 300
+    amplitude = []
+    frequency = np.linspace(0, paramLen * t, paramLen)
+    for amp in fastFourier:
+        amplitude.append(np.abs(amp))
+    sortedAmplitude = amplitude
+    sortedAmplitude = sorted(sortedAmplitude)
+    max_amplitude = sortedAmplitude[(-2)]
+    max_frequency = frequency.tolist()[amplitude.index(max_amplitude)]
+    return [max_amplitude, max_frequency]
+
+
+def glucoseFeatures(meal_Nomeal_data):
+    glucoseFeatures = pd.DataFrame()
+    for i in range(0, meal_Nomeal_data.shape[0]):
+        param = meal_Nomeal_data.iloc[i, :].tolist()
+        glucoseFeatures = glucoseFeatures.append({
+            'Minimum Value': min(param),
+            'Maximum Value': max(param),
+            'Mean of Absolute Values1': absoluteValueMean(param[:13]),
+            'Mean of Absolute Values2': absoluteValueMean(param[13:]),
+            'Root Mean Square': rootMeanSquare(param),
+            'Entropy': rootMeanSquare(param),
+            'Max FFT Amplitude1': fastFourier(param[:13])[0],
+            'Max FFT Frequency1': fastFourier(param[:13])[1],
+            'Max FFT Amplitude2': fastFourier(param[13:])[0],
+            'Max FFT Frequency2': fastFourier(param[13:])[1]},
+            ignore_index=True)
+    return glucoseFeatures
+
+
+
+
+def mealNoMealExtraction(insulinPath, cgmPath):
+    df_insulin = pd.read_csv(insulinPath, parse_dates=[['Date', 'Time']],keep_date_col=True)
+    df_cgm = pd.read_csv(cgmPath, parse_dates=[['Date', 'Time']], keep_date_col=True)
 
     # copy the non NaN carb input to another dataframe
     df_insulin_meal = df_insulin[df_insulin[['BWZ Carb Input (grams)']].notnull().all(1)]
@@ -21,18 +129,14 @@ def meal_NoMeal_Data_Extract(file_path_insulin, file_path_cgm):
     carb_start_time = min(df_insulin_meal['Date_Time'])
 
     df_insulin_meal['Time_Diff'] = (abs(carb_start_time - df_insulin_meal['Date_Time']))
-    #
-    # time_diff_list=[]
-    # for each in df_insulin_meal['Time_Diff']:
-    #    time_diff_list.append(each.total_seconds())
-    ##store time diff in cgm data frame
-    # df_insulin_meal['Time_Diff']=pd.DataFrame(time_diff_list,columns=['Time_Diff'])
+
+
     time_diff_list = []
     for each in df_insulin_meal['Time_Diff']:
         time_diff_list.append(each.total_seconds() / 60 ** 2)
-    # store time diff in cgm data frame
+
     df_insulin_meal['Time_Diff'] = pd.DataFrame(time_diff_list, columns=['Time_Diff'])
-    ##marking the meal time in insulin data
+
     max_index = max(df_insulin_meal.index)  # id len(df_insulin_meal)
     j = max_index
     while (j):
@@ -78,13 +182,12 @@ def meal_NoMeal_Data_Extract(file_path_insulin, file_path_cgm):
     df_insulin_meal.set_index('index', inplace=True)
     df_insulin_meal = df_insulin_meal[df_insulin_meal['Meal/No Meal'] == 1]
     df_insulin_meal.reset_index(inplace=True)
-    #  df_cgm=pd.read_excel(file_path_cgm,parse_dates=[['Date', 'Time']],keep_date_col=True)
 
     max_index_insulin_meal = max(df_insulin_meal.index)  # id you can use len(df_insulin_meal)
     max_index_cgm = max(df_cgm.index)  # id you can use len(df_insulin_meal)
 
     i_meal = max_index_insulin_meal
-    i_cgm = max_index_cgm  # id this line is redundant
+
 
     # df_cgm['Meal/No Meal']=999999
     # marking meal times in cgm data from insulin meal times
@@ -429,12 +532,9 @@ def meal_NoMeal_Data_Extract(file_path_insulin, file_path_cgm):
     return X, Y
 
 
-file_path_insulin = "0"  # input('Please enter full path of Patient 1 inslin data file: ')
-file_path_cgm = "0"  # input('Please enter full path of Patient 1 CGM data file: ')
+X_pt1, Y_pt1 = mealNoMealExtraction('InsulinData.csv', 'CGMData.csv')
 
-X_pt1, Y_pt1 = meal_NoMeal_Data_Extract('InsulinData.csv', 'CGMData.csv')
-
-#X_pt2, Y_pt2 = meal_NoMeal_Data_Extract('Insulin_patient2.csv', 'CGM_patient2.csv')
+#X_pt2, Y_pt2 = mealNoMealExtraction('Insulin_patient2.csv', 'CGM_patient2.csv')
 
 
 
@@ -470,10 +570,10 @@ model = svm.SVC(kernel='linear', C=.01,
                 gamma=0.1)  # svc for classification: kernel linear performance of C=.1 is best so far
 sv = model.fit(X_pt1, Y_pt1)
 
-with open('DMptG.pkl', 'wb') as handle:
+with open('model.pkl', 'wb') as handle:
     pickle.dump(sv, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-with open('DMptG.pkl', 'rb') as handle:
+with open('model.pkl', 'rb') as handle:
     model_from_job = pickle.load(handle)
 
 # model_from_job = pickle.load('DMpt1.pkl')
